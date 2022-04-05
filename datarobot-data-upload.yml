@@ -1,0 +1,65 @@
+---
+- name: Create new project and upload data in Datarobot
+  hosts: localhost
+  gather_facts: false
+  
+  vars:
+    dr_data_input_file: "{{ dr_project | replace(' ','_') }}_input.{{ dr_data_type }}"
+    
+  tasks:
+    - name: "Collect data from {{ data_server }} using {{ data_collect_script }}"
+      script: 
+        cmd: "{{ playbook_dir + '/' + data_collect_script }} {{ dr_data_input_file }}"
+      delegate_to: "{{ data_server }}"
+
+    - name: "Fetch data file: {{dr_data_input_file}} "
+      fetch:
+        src: "/tmp/{{ dr_data_input_file }}"
+        dest: /opt/ansible/datarobot/
+        flat: yes
+      delegate_to: "{{ data_server }}"
+
+    - name: "Create new {{ dr_project }} and upload dataset"
+      uri:
+        url: "{{ api_root }}/projects/"
+        method: POST
+        body_format: form-multipart
+        body:
+          projectName: "{{ dr_project }}"
+          file:
+            filename: "/opt/ansible/datarobot/{{ dr_data_input_file }}"
+            mime_type: "{{ (dr_data_type == 'xls') | ternary('application/vnd.ms-excel','text/csv') }}"
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+        return_content: true
+        status_code: 202
+      register: upload_result
+    
+    - name: debug upload_result
+      debug:
+        var: upload_result
+        verbosity: 2
+
+    - name: "Check project {{ dr_project }} status is complete "
+      uri:
+        url: "{{ upload_result.location }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+        return_content: true
+      register: project_status   
+      until: project_status.json.id is defined
+      retries: 30
+      delay: 10
+
+    - name: debug project_status
+      debug:
+        var: project_status
+        verbosity: 2
+
+    - name: Print project status and id
+      debug:
+        msg:
+          - "Project Status: {{ project_status.json.id is defined | ternary('Completed', project_status.json.status) }}"
+          - "Project ID: {{ project_status.json.id | default('') }}"
+    
